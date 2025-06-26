@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euxo pipefail
 cargo build
 cc -o simple ./examples/simple.c -Iinclude/ -L./target/debug -lfsrs_rs_c -lm
 LD_LIBRARY_PATH=./target/debug ./simple
@@ -9,3 +10,6 @@ rm optimize
 cc -o schedule ./examples/schedule.c -Iinclude/ -L./target/debug -lfsrs_rs_c -lm
 LD_LIBRARY_PATH=./target/debug ./schedule
 rm schedule
+cc -o train_csv ./examples/train_csv.c -Iinclude/ -L./target/debug -lfsrs_rs_c -lm
+LD_LIBRARY_PATH=./target/debug ./train_csv
+rm train_csv
