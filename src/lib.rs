@@ -1,6 +1,7 @@
-use fsrs::{FSRS, FSRSItem, FSRSReview, ItemState, MemoryState, NextStates, Rating};
-use std::ffi::{c_char, CStr};
-use std::ptr::null_mut;
+use fsrs::{self, ComputeParametersInput};
+
+// Opaque handle for FSRS - not exported to C header
+pub struct FSRS(pub fsrs::FSRS);
 
 #[repr(C)]
 pub struct FsrsItems {
@@ -14,19 +15,56 @@ pub struct FsrsReviews {
     pub len: usize,
 }
 
+#[repr(C)]
+#[derive(Clone)]
+pub struct MemoryState {
+    pub stability: f32,
+    pub difficulty: f32,
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct ItemState {
+    pub memory: MemoryState,
+    pub interval: f32,
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct NextStates {
+    pub again: ItemState,
+    pub hard: ItemState,
+    pub good: ItemState,
+    pub easy: ItemState,
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct FSRSItem {
+    pub reviews: *mut FSRSReview,
+    pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FSRSReview {
+    pub rating: u32,
+    pub delta_t: u32,
+}
+
 /// Creates a new FSRS instance.
 ///
 /// # Safety
 ///
 /// The `parameters` pointer must be a valid pointer to an array of f32 with `len` elements.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fsrs_new(parameters: *const f32, len: usize) -> *mut FSRS {
+pub unsafe extern "C" fn fsrs_new(parameters: *const f32, len: usize) -> *const FSRS {
     let params = if parameters.is_null() {
         None
     } else {
-        Some(std::slice::from_raw_parts(parameters, len))
+        Some(unsafe { std::slice::from_raw_parts(parameters, len) })
     };
-    Box::into_raw(Box::new(FSRS::new(params).unwrap()))
+    Box::into_raw(Box::new(FSRS(fsrs::FSRS::new(params).unwrap())))
 }
 
 /// Frees the memory allocated for an FSRS instance.
@@ -35,9 +73,9 @@ pub unsafe extern "C" fn fsrs_new(parameters: *const f32, len: usize) -> *mut FS
 ///
 /// The `fsrs` pointer must be a valid pointer to an FSRS instance created by `fsrs_new`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fsrs_free(fsrs: *mut FSRS) {
+pub unsafe extern "C" fn fsrs_free(fsrs: *const FSRS) {
     if !fsrs.is_null() {
-        drop(Box::from_raw(fsrs));
+        unsafe { drop(Box::from_raw(fsrs as *mut FSRS)) };
     }
 }
 
@@ -49,32 +87,33 @@ pub unsafe extern "C" fn fsrs_free(fsrs: *mut FSRS) {
 /// The `memory_state` pointer must be a valid pointer to a MemoryState instance.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_next_states(
-    fsrs: *mut FSRS,
+    fsrs: *const FSRS,
     memory_state: *mut MemoryState,
     desired_retention: f32,
     days_elapsed: u32,
 ) -> *mut NextStates {
-    let fsrs = &*fsrs;
+    let fsrs = unsafe { &*fsrs };
     let memory_state = if memory_state.is_null() {
         None
     } else {
-        Some((*memory_state).clone())
+        Some(unsafe { (*memory_state).clone().into() })
     };
     let next_states = fsrs
+        .0
         .next_states(memory_state, desired_retention, days_elapsed)
         .unwrap();
-    Box::into_raw(Box::new(next_states))
+    Box::into_raw(Box::new(next_states.into()))
 }
 
 /// Frees the memory allocated for a NextStates instance.
 ///
 /// # Safety
 ///
-  /// The `next_states` pointer must be a valid pointer to a NextStates instance created by `fsrs_next_states`.
+/// The `next_states` pointer must be a valid pointer to a NextStates instance created by `fsrs_next_states`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_next_states_free(next_states: *mut NextStates) {
     if !next_states.is_null() {
-        drop(Box::from_raw(next_states));
+        unsafe { drop(Box::from_raw(next_states)) };
     }
 }
 
@@ -85,7 +124,7 @@ pub unsafe extern "C" fn fsrs_next_states_free(next_states: *mut NextStates) {
 /// The `next_states` pointer must be a valid pointer to a NextStates instance.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_next_states_again(next_states: *const NextStates) -> ItemState {
-    (*next_states).again.clone()
+    unsafe { (*next_states).again.clone() }
 }
 
 /// Get the `hard` state from NextStates.
@@ -95,7 +134,7 @@ pub unsafe extern "C" fn fsrs_next_states_again(next_states: *const NextStates) 
 /// The `next_states` pointer must be a valid pointer to a NextStates instance.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_next_states_hard(next_states: *const NextStates) -> ItemState {
-    (*next_states).hard.clone()
+    unsafe { (*next_states).hard.clone() }
 }
 
 /// Get the `good` state from NextStates.
@@ -105,7 +144,7 @@ pub unsafe extern "C" fn fsrs_next_states_hard(next_states: *const NextStates) -
 /// The `next_states` pointer must be a valid pointer to a NextStates instance.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_next_states_good(next_states: *const NextStates) -> ItemState {
-    (*next_states).good.clone()
+    unsafe { (*next_states).good.clone() }
 }
 
 /// Get the `easy` state from NextStates.
@@ -115,7 +154,7 @@ pub unsafe extern "C" fn fsrs_next_states_good(next_states: *const NextStates) -
 /// The `next_states` pointer must be a valid pointer to a NextStates instance.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_next_states_easy(next_states: *const NextStates) -> ItemState {
-    (*next_states).easy.clone()
+    unsafe { (*next_states).easy.clone() }
 }
 
 /// Computes the parameters for a given train set.
@@ -126,13 +165,19 @@ pub unsafe extern "C" fn fsrs_next_states_easy(next_states: *const NextStates) -
 /// The `train_set` pointer must be a valid pointer to an array of FSRSItem.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_compute_parameters(
-    fsrs: *mut FSRS,
+    fsrs: *const FSRS,
     train_set: *mut FsrsItems,
 ) -> *mut f32 {
-    let fsrs = &mut *fsrs;
-    let train_set = std::slice::from_raw_parts((*train_set).items, (*train_set).len).to_vec();
+    let fsrs = unsafe { &*fsrs };
+    let train_set = unsafe {
+        std::slice::from_raw_parts((*train_set).items, (*train_set).len)
+            .iter()
+            .map(|item| (*item).clone().into())
+            .collect()
+    };
     let params = fsrs
-        .compute_parameters(fsrs::ComputeParametersInput {
+        .0
+        .compute_parameters(ComputeParametersInput {
             train_set,
             progress: None,
             enable_short_term: true,
@@ -150,7 +195,7 @@ pub unsafe extern "C" fn fsrs_compute_parameters(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_parameters_free(params: *mut f32) {
     if !params.is_null() {
-        drop(Box::from_raw(params));
+        unsafe { drop(Box::from_raw(params)) };
     }
 }
 
@@ -171,7 +216,7 @@ pub extern "C" fn fsrs_memory_state_new(stability: f32, difficulty: f32) -> *mut
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_memory_state_free(memory_state: *mut MemoryState) {
     if !memory_state.is_null() {
-        drop(Box::from_raw(memory_state));
+        unsafe { drop(Box::from_raw(memory_state)) };
     }
 }
 
@@ -182,8 +227,16 @@ pub unsafe extern "C" fn fsrs_memory_state_free(memory_state: *mut MemoryState) 
 /// The `reviews` pointer must be a valid pointer to an array of FSRSReview.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_item_new(reviews: *mut FsrsReviews) -> *mut FSRSItem {
-    let reviews = std::slice::from_raw_parts((*reviews).reviews, (*reviews).len).to_vec();
-    Box::into_raw(Box::new(FSRSItem { reviews }))
+    let review_slice = unsafe { std::slice::from_raw_parts((*reviews).reviews, (*reviews).len) };
+    let review_vec: Vec<FSRSReview> = review_slice.to_vec();
+    let review_box = review_vec.into_boxed_slice();
+    let reviews_ptr = Box::into_raw(review_box) as *mut FSRSReview;
+    let len = unsafe { (*reviews).len };
+
+    Box::into_raw(Box::new(FSRSItem {
+        reviews: reviews_ptr,
+        len,
+    }))
 }
 
 /// Frees the memory allocated for an FSRSItem instance.
@@ -194,7 +247,12 @@ pub unsafe extern "C" fn fsrs_item_new(reviews: *mut FsrsReviews) -> *mut FSRSIt
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_item_free(item: *mut FSRSItem) {
     if !item.is_null() {
-        drop(Box::from_raw(item));
+        let item = unsafe { Box::from_raw(item) };
+        if !item.reviews.is_null() {
+            unsafe {
+                let _ = Box::from_raw(std::slice::from_raw_parts_mut(item.reviews, item.len));
+            }
+        }
     }
 }
 
@@ -212,6 +270,66 @@ pub extern "C" fn fsrs_review_new(rating: u32, delta_t: u32) -> *mut FSRSReview 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fsrs_review_free(review: *mut FSRSReview) {
     if !review.is_null() {
-        drop(Box::from_raw(review));
+        unsafe { drop(Box::from_raw(review)) };
+    }
+}
+
+// Conversion functions between internal fsrs types and C-compatible types
+impl From<fsrs::MemoryState> for MemoryState {
+    fn from(state: fsrs::MemoryState) -> Self {
+        MemoryState {
+            stability: state.stability,
+            difficulty: state.difficulty,
+        }
+    }
+}
+
+impl From<MemoryState> for fsrs::MemoryState {
+    fn from(state: MemoryState) -> Self {
+        fsrs::MemoryState {
+            stability: state.stability,
+            difficulty: state.difficulty,
+        }
+    }
+}
+
+impl From<fsrs::ItemState> for ItemState {
+    fn from(state: fsrs::ItemState) -> Self {
+        ItemState {
+            memory: state.memory.into(),
+            interval: state.interval,
+        }
+    }
+}
+
+impl From<fsrs::NextStates> for NextStates {
+    fn from(states: fsrs::NextStates) -> Self {
+        NextStates {
+            again: states.again.into(),
+            hard: states.hard.into(),
+            good: states.good.into(),
+            easy: states.easy.into(),
+        }
+    }
+}
+
+impl From<FSRSReview> for fsrs::FSRSReview {
+    fn from(review: FSRSReview) -> Self {
+        fsrs::FSRSReview {
+            rating: review.rating,
+            delta_t: review.delta_t,
+        }
+    }
+}
+
+impl From<FSRSItem> for fsrs::FSRSItem {
+    fn from(item: FSRSItem) -> Self {
+        let reviews = unsafe {
+            std::slice::from_raw_parts(item.reviews, item.len)
+                .iter()
+                .map(|r| (*r).into())
+                .collect()
+        };
+        fsrs::FSRSItem { reviews }
     }
 }

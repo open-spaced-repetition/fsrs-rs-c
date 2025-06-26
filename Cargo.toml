@@ -11,4 +11,4 @@ fsrs = "4.1.1"
 
 
 [build-dependencies]
-cbindgen = "0.26.0"
+cbindgen = "0.29.0"
