@@ -37,8 +37,10 @@ size_t load_cards(Card cards[], const char* filename) {
                 .total_reviews = atoi(tr),
                 .correct_reviews = atoi(cr)
             };
-            strcpy(cards[count].question, q);
-            strcpy(cards[count].answer, a);
+            strncpy(cards[count].question, q, sizeof(cards[count].question) - 1);
+            cards[count].question[sizeof(cards[count].question) - 1] = '\0';
+            strncpy(cards[count].answer, a, sizeof(cards[count].answer) - 1);
+            cards[count].answer[sizeof(cards[count].answer) - 1] = '\0';
             count++;
         }
     }
