@@ -4,15 +4,24 @@
 #include <time.h>
 #include <locale.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include "fsrs.h"
 
-#define MAX_CARDS 1000
+#define MAX_CARDS 100
+#define MAX_REVIEWS 100
 
 typedef struct {
-    char question[512], answer[512];
+    time_t timestamp;
+    int grade;
+} Review;
+
+typedef struct {
+    char question[51], answer[51];
     float difficulty, stability;
-    int interval, total_reviews, correct_reviews;
+    int interval;
     time_t last_review;
+    Review reviews[MAX_REVIEWS];
+    size_t review_count;
 } Card;
 
 size_t load_cards(Card cards[], const char* filename) {
@@ -20,30 +29,61 @@ size_t load_cards(Card cards[], const char* filename) {
     if (!file) return 0;
     
     int count = 0;
-    char line[2048];
-    while (fgets(line, sizeof(line), file) && count < MAX_CARDS) {
-        char* q = strtok(line, "|"), *a = strtok(NULL, "|"), *d = strtok(NULL, "|");
-        char* s = strtok(NULL, "|"), *i = strtok(NULL, "|"), *t = strtok(NULL, "|");
-        char* tr = strtok(NULL, "|"), *cr = strtok(NULL, "\n");
+    char line[4096];
+
+    while (count < MAX_CARDS) {
+        // Parse question (first line)
+        if (!fgets(line, sizeof(line), file)) break;
+        line[strcspn(line, "\n")] = 0;
+        if (strlen(line) == 0) continue;  // Skip empty lines
         
-        if (q && a && d && s && i && t && tr && cr) {
-            cards[count] = (Card) {
-                .question = "",
-                .answer = "",
-                .difficulty = atof(d),
-                .stability = atof(s),
-                .interval = atoi(i),
-                .last_review = atoll(t),
-                .total_reviews = atoi(tr),
-                .correct_reviews = atoi(cr)
-            };
-            strncpy(cards[count].question, q, sizeof(cards[count].question) - 1);
-            cards[count].question[sizeof(cards[count].question) - 1] = '\0';
-            strncpy(cards[count].answer, a, sizeof(cards[count].answer) - 1);
-            cards[count].answer[sizeof(cards[count].answer) - 1] = '\0';
-            count++;
+        strncpy(cards[count].question, line, sizeof(cards[count].question) - 1);
+        cards[count].question[sizeof(cards[count].question) - 1] = '\0';
+
+        // Parse answer (second line)
+        if (!fgets(line, sizeof(line), file)) break;
+        line[strcspn(line, "\n")] = 0;
+        if (strlen(line) == 0) continue;  // Skip empty lines
+        
+        strncpy(cards[count].answer, line, sizeof(cards[count].answer) - 1);
+        cards[count].answer[sizeof(cards[count].answer) - 1] = '\0';
+        
+        // Parse review history (third line: timestamp grade timestamp grade ...)
+        if (!fgets(line, sizeof(line), file)) break;
+        line[strcspn(line, "\n")] = 0;
+
+        // Initialize card defaults
+        cards[count].difficulty = 5.0f;
+        cards[count].stability = 2.5f;
+        cards[count].interval = 1;
+        cards[count].last_review = 0;
+        cards[count].review_count = 0;
+        
+        // Parse review history
+        if (strlen(line) > 0) {
+            char* token = strtok(line, " ");
+            while (token && cards[count].review_count < MAX_REVIEWS) {
+                // Parse timestamp
+                time_t timestamp = atoll(token);
+                token = strtok(NULL, " ");
+                if (!token) break;
+                
+                // Parse grade
+                int grade = atoi(token);
+                
+                // Store review
+                cards[count].reviews[cards[count].review_count].timestamp = timestamp;
+                cards[count].reviews[cards[count].review_count].grade = grade;
+                cards[count].review_count++;
+                cards[count].last_review = timestamp;
+                
+                token = strtok(NULL, " ");
+            }
         }
+        
+        count++;
     }
+    
     fclose(file);
     return count;
 }
@@ -53,13 +93,88 @@ void save_cards(Card cards[], size_t count, const char* filename) {
     if (!file) return;
     
     for (size_t i = 0; i < count; i++) {
-        fprintf(file, "%s|%s|%.2f|%.2f|%" PRId32 "|%" PRId64 "|%" PRId32 "|%" PRId32 "\n",
-                cards[i].question, cards[i].answer,
-                cards[i].difficulty, cards[i].stability,
-                cards[i].interval, (int64_t)cards[i].last_review,
-                cards[i].total_reviews, cards[i].correct_reviews);
+        // Write question
+        fprintf(file, "%s\n", cards[i].question);
+        
+        // Write answer
+        fprintf(file, "%s\n", cards[i].answer);
+        
+        // Write review history (timestamp grade pairs)
+        for (size_t j = 0; j < cards[i].review_count; j++) {
+            fprintf(file, "%" PRId64 " %" PRId32, 
+                    (int64_t)cards[i].reviews[j].timestamp,
+                    cards[i].reviews[j].grade);
+            if (j < cards[i].review_count - 1) {
+                fprintf(file, " ");
+            }
+        }
+        fprintf(file, "\n");
+        
+        // Add empty line between cards for readability
+        if (i < count - 1) {
+            fprintf(file, "\n");
+        }
     }
     fclose(file);
+}
+
+void save_parameters(const float* params, const char* filename) {
+    FILE* file = fopen(filename, "w");
+    if (!file) {
+        perror("Failed to open parameter file for writing");
+        return;
+    }
+    for (size_t i = 0; i < 19; i++) {
+        fprintf(file, "%.6f\n", params[i]);
+    }
+    fclose(file);
+}
+
+bool load_parameters(float* params, const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (!file) return false;
+    for (size_t i = 0; i < 19; i++) {
+        if (fscanf(file, "%f", &params[i]) != 1) {
+            fclose(file);
+            return false;
+        }
+    }
+    fclose(file);
+    return true;
+}
+
+// Helper function to create a contiguous array from array of pointers
+fsrs_FSRSItem* create_contiguous_items(fsrs_FSRSItem* const* const item_pointers, 
+                                             const size_t count) {
+
+    if (count == 0 || !item_pointers) {
+        return NULL;
+    }
+    
+    fsrs_FSRSItem* const contiguous_items = malloc(count * sizeof(fsrs_FSRSItem));
+    if (!contiguous_items) {
+        return NULL;
+    }
+    
+    for (size_t i = 0; i < count; i++) {
+        if (item_pointers[i]) {
+            contiguous_items[i] = *item_pointers[i];
+        }
+    }
+    
+    return contiguous_items;
+}
+
+// Function to free FSRSItems array
+void free_fsrs_items(fsrs_FSRSItem** const items, const size_t count) {
+    if (!items) {
+        return;
+    }
+    
+    for (size_t i = 0; i < count; i++) {
+        fsrs_item_free(items[i]);
+    }
+    free(items);
 }
 
 float* optimize_parameters(Card cards[], size_t card_count, const fsrs_FSRS* fsrs) {
@@ -70,60 +185,65 @@ float* optimize_parameters(Card cards[], size_t card_count, const fsrs_FSRS* fsr
     
     printf("Processing %zu cards for optimization...\n", card_count);
     
-    // Create array to hold FSRSItem pointers (like optimize.c)
-    fsrs_FSRSItem** items = malloc(card_count * sizeof(fsrs_FSRSItem*));
+    // Create array to hold all FSRSItem pointers from all cards
+    fsrs_FSRSItem** items = malloc(card_count * MAX_REVIEWS * sizeof(fsrs_FSRSItem*));
     if (!items) {
         printf("Failed to allocate memory for items array\n");
         return NULL;
     }
     
     size_t valid_items = 0;
+    
+    // Process each card and create multiple FSRSItems from its review history
     for (size_t i = 0; i < card_count; i++) {
-        if (cards[i].total_reviews > 0) {
-            int num_reviews = cards[i].total_reviews < 5 ? cards[i].total_reviews : 5;
-            fsrs_FSRSReview* reviews = malloc(num_reviews * sizeof(fsrs_FSRSReview));
+        if (cards[i].review_count < 2) {
+            continue;  // Need at least 2 reviews to create meaningful items
+        }
+        
+        // Create multiple FSRSItems from this card's history (like optimize.c does)
+        for (size_t seq_len = 2; seq_len <= cards[i].review_count; seq_len++) {
+            fsrs_FSRSReview* reviews = malloc(seq_len * sizeof(fsrs_FSRSReview));
             if (!reviews) continue;
-            
-            // Create more realistic synthetic review history based on performance
-            float success_rate = (float)cards[i].correct_reviews / cards[i].total_reviews;
-            for (int j = 0; j < num_reviews; j++) {
-                // More realistic delta_t progression (increasing intervals)
+
+            // Convert the actual review history to FSRSReview format
+            bool has_positive_delta_t = false;
+
+            for (size_t j = 0; j < seq_len; j++) {
                 if (j == 0) {
                     reviews[j].delta_t = 0;  // First review always 0
-                } else if (j == 1) {
-                    reviews[j].delta_t = 1;  // Day after first review
                 } else {
-                    reviews[j].delta_t = (j - 1) * 3 + 1;  // Increasing intervals
+                    // Calculate days between reviews
+                    time_t prev_time = cards[i].reviews[j-1].timestamp;
+                    time_t curr_time = cards[i].reviews[j].timestamp;
+                    uint32_t delta_days = (uint32_t)((curr_time - prev_time) / (24 * 60 * 60));
+                    reviews[j].delta_t = delta_days;
+                    if (delta_days > 0) {
+                        has_positive_delta_t = true;
+                    }
                 }
                 
-                // More realistic rating distribution based on success rate
-                if (success_rate > 0.8f) {
-                    reviews[j].rating = (j % 3 == 0) ? 4 : 3;  // Mostly good/easy
-                } else if (success_rate > 0.6f) {
-                    reviews[j].rating = 3;  // Mostly good
-                } else if (success_rate > 0.4f) {
-                    reviews[j].rating = (j % 2) ? 3 : 2;  // Mix of good and hard
-                } else {
-                    reviews[j].rating = (j % 2) ? 2 : 1;  // Mix of hard and again
+                // Use actual grade from review history
+                reviews[j].rating = (uint32_t)cards[i].reviews[j].grade;
+            }
+            
+            // Only create items with valid review sequences
+            if (has_positive_delta_t && seq_len > 1) {
+                fsrs_FsrsReviews review_collection = {reviews, seq_len};
+                fsrs_FSRSItem* item = fsrs_item_new(&review_collection);
+                
+                if (item) {
+                    items[valid_items] = item;
+                    valid_items++;
                 }
             }
             
-            // Create FsrsReviews wrapper and use fsrs_item_new (like optimize.c)
-            fsrs_FsrsReviews review_collection = {reviews, num_reviews};
-            fsrs_FSRSItem* item = fsrs_item_new(&review_collection);
-            
-            if (item) {
-                items[valid_items] = item;
-                valid_items++;
-            }
-            
-            free(reviews);  // Can free reviews after fsrs_item_new copies the data
+            free(reviews);
         }
     }
     
     printf("Created %zu valid items from review history\n", valid_items);
     
-    if (valid_items < 3) {  // Need at least 3 items for optimization
+    if (valid_items < 3) {  // Need sufficient items for meaningful optimization
         printf("Need at least 3 items for optimization, only have %zu\n", valid_items);
         for (size_t i = 0; i < valid_items; i++) {
             fsrs_item_free(items[i]);
@@ -131,21 +251,48 @@ float* optimize_parameters(Card cards[], size_t card_count, const fsrs_FSRS* fsr
         free(items);
         return NULL;
     }
-    // TODO: optimize parameters
 
-    return NULL;
+    // Create contiguous array for the train_set
+    fsrs_FSRSItem* const contiguous_items = create_contiguous_items(items, valid_items);
+    if (!contiguous_items) {
+        printf("Error: Failed to create contiguous items array\n");
+        free_fsrs_items(items, valid_items);
+        return NULL;
+    }
+    
+    // Create FsrsItems structure for optimization
+    fsrs_FsrsItems train_set = {
+        .items = contiguous_items, 
+        .len = valid_items
+    };
+
+    // Optimize the FSRS model using the created items
+    printf("\nOptimizing parameters...\n");
+    float* const optimized_parameters = fsrs_compute_parameters(fsrs, &train_set);
+    
+    // Clean up
+    free(contiguous_items);
+    free_fsrs_items(items, valid_items);
+
+    return optimized_parameters;
 }
 
 int main() {
     // Set locale for UTF-8 support (required for CJK characters)
     setlocale(LC_ALL, "");
-
-    const float default_params[] = {
+    float params[] = {
         0.40255f, 1.18385f, 3.173f, 15.69105f, 7.1949f, 0.5345f, 
         1.4604f, 0.0046f, 1.54575f, 0.1192f, 1.01925f, 1.9395f, 
         0.11f, 0.29605f, 2.2698f, 0.2315f, 2.9898f, 0.51655f, 0.6621f
     };
-    const fsrs_FSRS* fsrs = fsrs_new(default_params, 19);
+
+    if (load_parameters(params, "fsrs_params.txt")) {
+        printf("Loaded parameters from fsrs_params.txt\n");
+    } else {
+        printf("No custom parameters found, using defaults\n");
+    }
+
+    const fsrs_FSRS* fsrs = fsrs_new(params, 19);
     
     Card cards[MAX_CARDS];
     size_t card_count = load_cards(cards, "cards.txt");
@@ -159,9 +306,13 @@ int main() {
             .stability = 2.5f,
             .interval = 3,
             .last_review = time(NULL) - 86400 * 3,
-            .total_reviews = 5,
-            .correct_reviews = 4
+            .review_count = 2
         };
+        
+        // Add some sample review history
+        time_t base_time = time(NULL) - 86400 * 10;
+        cards[0].reviews[0] = (Review){base_time, 3};
+        cards[0].reviews[1] = (Review){base_time + 86400 * 3, 4};
         
         card_count = 1;
     }
@@ -185,11 +336,14 @@ int main() {
             fsrs_free(fsrs);
             fsrs = fsrs_new(optimized, 19);
             printf("Parameters optimized based on your review history!\n");
+            save_parameters(optimized, "fsrs_params.txt");
+            printf("Saved new parameters to fsrs_params.txt\n");
             fsrs_parameters_free(optimized);
         } else {
-            printf("Need at least 3 cards with review history for optimization\n");
+            printf("Need at least 3 items with review history for optimization\n");
         }
     }
+
     
     time_t now = time(NULL);
     size_t cards_reviewed = 0;
@@ -228,8 +382,13 @@ int main() {
             cards[i].stability = new_state.memory.stability;
             cards[i].interval = (int)new_state.interval;
             cards[i].last_review = now;
-            cards[i].total_reviews++;
-            if (rating >= 3) cards[i].correct_reviews++;
+            
+            // Add review to history
+            if (cards[i].review_count < MAX_REVIEWS) {
+                cards[i].reviews[cards[i].review_count].timestamp = now;
+                cards[i].reviews[cards[i].review_count].grade = rating;
+                cards[i].review_count++;
+            }
             
             printf("Next review in %" PRId32 " days\n", cards[i].interval);
             cards_reviewed++;
