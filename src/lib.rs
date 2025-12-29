@@ -250,7 +250,7 @@ pub unsafe extern "C" fn fsrs_item_free(item: *mut FSRSItem) {
         let item = unsafe { Box::from_raw(item) };
         if !item.reviews.is_null() {
             unsafe {
-                let _ = Box::from_raw(std::slice::from_raw_parts_mut(item.reviews, item.len));
+                let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(item.reviews, item.len));
             }
         }
     }
